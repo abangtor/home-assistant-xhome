@@ -51,7 +51,7 @@ This repository can be installed as a HACS custom repository.
 
 1. Open HACS in Home Assistant.
 2. Open the three-dot menu and choose **Custom repositories**.
-3. Add `https://github.com/abangtor/xhome`.
+3. Add `https://github.com/abangtor/home-assistant-xhome`.
 4. Select category **Integration**.
 5. Install **XHome**.
 6. Restart Home Assistant.

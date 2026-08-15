@@ -3,10 +3,10 @@
   "name": "XHome",
   "codeowners": ["@abangtor"],
   "config_flow": true,
-  "documentation": "https://github.com/abangtor/xhome",
+  "documentation": "https://github.com/abangtor/home-assistant-xhome",
   "integration_type": "hub",
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/abangtor/xhome/issues",
+  "issue_tracker": "https://github.com/abangtor/home-assistant-xhome/issues",
   "requirements": ["cryptography>=42", "Pillow>=10", "requests>=2.31"],
   "version": "0.1.0"
 }
