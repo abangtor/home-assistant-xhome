@@ -324,6 +324,14 @@ Live viewing and active recording use the app's native P2P stack.
 
 ## Live streaming
 
+Live frames preserve their full decoded dimensions (swapped for 90/270-degree
+rotation). The camera does not guess padding from scene brightness or increase
+an edge crop during playback. Camera snapshots reuse the same validated,
+prepared JPEG as the live stream. The parser strips the final fragment's
+28-byte metadata header before assembling the JPEG, preventing a corrupted
+edge without removing any image pixels.
+
+
 The integration now exposes a per-device `Live camera` entity as the Home
 Assistant-side surface for the native XHome P2P JPEG stream. XHome live video is
 not a direct REST/HLS/RTSP URL; the official app logs in to the native IoT

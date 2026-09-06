@@ -27,7 +27,6 @@ from .entity import XHomeEntity
 from .helpers import redact_uid
 from .image import (
     image_rotation_degrees,
-    is_decodable_jpeg,
     prepare_live_image_bytes,
     rotate_image_bytes,
 )
@@ -138,7 +137,7 @@ class XHomeLiveCamera(XHomeEntity, Camera):
                 "video_codec": "mjpeg",
                 "audio_codec": "g711",
                 "image_rotation": self._image_rotation(),
-                "live_rotation_edge_crop_mode": "auto",
+                "live_rotation_edge_crop_mode": "none",
                 "live_rotation_edge_crop_pixels": self._live_rotation_edge_crop_pixels,
                 "live_streams_started": self._live_streams_started,
                 "live_frames": self._live_frames,
@@ -245,9 +244,8 @@ class XHomeLiveCamera(XHomeEntity, Camera):
                 frame, frame_status, edge_crop_pixels = await self.hass.async_add_executor_job(
                     self._prepare_stream_jpeg,
                     frame,
-                    self._live_rotation_edge_crop_pixels,
                 )
-                self._live_rotation_edge_crop_pixels = max(self._live_rotation_edge_crop_pixels, edge_crop_pixels)
+                self._live_rotation_edge_crop_pixels = edge_crop_pixels
                 if frame_status == "invalid":
                     self._live_invalid_jpeg_frames += 1
                 elif frame_status == "rotation_failed":
@@ -256,6 +254,7 @@ class XHomeLiveCamera(XHomeEntity, Camera):
                     self._live_rotated_frames += 1
                 if frame is None:
                     continue
+                self._last_live_jpeg = frame
                 await response.write(
                     b"--"
                     + MJPEG_BOUNDARY
@@ -288,16 +287,15 @@ class XHomeLiveCamera(XHomeEntity, Camera):
         """Return the latest live JPEG, falling back to latest event image."""
 
         if self._last_live_jpeg is not None:
-            return self._rotate_jpeg(self._last_live_jpeg)
+            # Already validated and rotated by the stream preparation path.
+            return self._last_live_jpeg
         image = await self.coordinator.async_get_latest_event_image(self.uid)
         if image is None:
             return None
         return self._rotate_jpeg(image)
 
     def _handle_live_jpeg(self, frame_queue: asyncio.Queue[bytes], frame: bytes) -> None:
-        """Cache one live JPEG and queue it for the MJPEG response."""
-
-        self._last_live_jpeg = frame
+        """Queue raw media; cache only after validation and rotation."""
         self._live_frames += 1
         self._live_last_frame_at = int(time.time())
         self._live_last_error = None
@@ -321,29 +319,26 @@ class XHomeLiveCamera(XHomeEntity, Camera):
             self._live_rotated_frames += 1
         return rotated
 
-    def _prepare_stream_jpeg(
-        self,
-        image: bytes,
-        minimum_edge_crop_pixels: int,
-    ) -> tuple[bytes | None, str, int]:
-        """Prepare one MJPEG frame for streaming."""
+    def _prepare_stream_jpeg(self, image: bytes) -> tuple[bytes | None, str, int]:
+        """Decode and rotate a full frame without scene-dependent cropping.
+
+        Changing JPEG dimensions within one MJPEG response can confuse browser
+        rendering. Brightness at the edge is also not evidence of padding: the
+        old heuristic cropped real scene content and latched that loss for the
+        rest of the stream. Re-encode even at zero rotation so every live frame
+        passes through the same validation path.
+        """
 
         rotation = self._image_rotation()
-        if rotation == 0:
-            if not is_decodable_jpeg(image):
-                return None, "invalid", 0
-            return image, "original", 0
-        rotated, edge_crop_pixels = prepare_live_image_bytes(
+        prepared, _ = prepare_live_image_bytes(
             image,
             rotation,
             self._attr_content_type,
-            minimum_edge_crop_pixels=minimum_edge_crop_pixels,
+            edge_crop_pixels=0,
         )
-        if rotated is None:
-            return None, "invalid", edge_crop_pixels
-        if rotated == image:
-            return None, "rotation_failed", edge_crop_pixels
-        return rotated, "rotated", edge_crop_pixels
+        if prepared is None:
+            return None, "invalid", 0
+        return prepared, "rotated" if rotation else "original", 0
 
     def _image_rotation(self) -> int:
         """Return the configured camera image rotation."""

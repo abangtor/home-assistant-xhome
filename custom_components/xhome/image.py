@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from io import BytesIO
 from typing import Any
 
@@ -69,7 +69,7 @@ class XHomeLatestEventImage(XHomeEntity, ImageEntity):
         if media is None or media.time_stamp is None:
             return None
         timestamp = media.time_stamp / 1000 if media.time_stamp > 10_000_000_000 else media.time_stamp
-        return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        return datetime.fromtimestamp(timestamp, tz=UTC)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -185,6 +185,13 @@ def prepare_live_image_bytes(
 ) -> tuple[bytes | None, int]:
     """Rotate one live JPEG frame and return the auto-detected edge crop."""
 
+    # Pillow can decode a JPEG without EOI, or another format altogether.
+    # Do not publish incomplete/non-JPEG media as a healthy live frame.
+    if not image_bytes.startswith(JPEG_SOI) or not image_bytes.endswith(b"\xff\xd9"):
+        return None, minimum_edge_crop_pixels
+    if rotation not in IMAGE_ROTATIONS:
+        return None, minimum_edge_crop_pixels
+
     try:
         from PIL import Image, ImageOps
     except ImportError:
@@ -204,9 +211,6 @@ def prepare_live_image_bytes(
                 image = image.transpose(Image.Transpose.ROTATE_180)
             elif rotation == 270:
                 image = image.transpose(Image.Transpose.ROTATE_90)
-            elif rotation != 0:
-                return None
-
             output = BytesIO()
             image.save(output, format=_image_format(source, content_type))
             return output.getvalue(), edge_crop_pixels

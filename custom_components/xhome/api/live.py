@@ -9,6 +9,7 @@ from typing import Any
 
 MEDIA_HEADER_BYTES = 40
 APP_MEDIA_HEADER_BYTES = 20
+JPEG_FINAL_METADATA_BYTES = 28
 
 
 class CallbackType(IntEnum):
@@ -254,7 +255,11 @@ def parse_live_app_media_packet(data: bytes) -> LiveAppMediaPacket:
     - byte 13: rolling sequence id
     - byte 14: fragment index within the current frame
     - byte 15: fragment flag, ``1`` start, ``0`` middle, ``2`` end
-    - bytes 16..19: fragment payload length, which can under-report final JPEG fragments
+    - bytes 16..19: fragment image/audio payload length
+
+    Final JPEG fragments may prepend 28 bytes of frame metadata after the
+    application header. The outer length includes this metadata; the inner
+    payload length excludes it. It must never enter the JPEG entropy stream.
     """
 
     if len(data) < APP_MEDIA_HEADER_BYTES:
@@ -267,7 +272,17 @@ def parse_live_app_media_packet(data: bytes) -> LiveAppMediaPacket:
         raise ValueError(f"Unknown XHome app media type: {data[11]}") from exc
     payload_length = int.from_bytes(data[16:20], "little", signed=False)
     declared_payload_length = max(0, declared_length - (APP_MEDIA_HEADER_BYTES - 8))
+    payload_start = APP_MEDIA_HEADER_BYTES
     payload_end = APP_MEDIA_HEADER_BYTES + max(payload_length, declared_payload_length)
+    if (
+        command == ControlCommand.LAN_GET_AV_DATA_RESP
+        and media_type == MediaType.JPEG_FRAME
+        and data[15] == 2
+        and declared_payload_length - payload_length == JPEG_FINAL_METADATA_BYTES
+    ):
+        if len(data) < payload_end:
+            raise ValueError("Final JPEG fragment metadata/payload is truncated")
+        payload_start += JPEG_FINAL_METADATA_BYTES
     return LiveAppMediaPacket(
         command=command,
         declared_length=declared_length,
@@ -275,7 +290,7 @@ def parse_live_app_media_packet(data: bytes) -> LiveAppMediaPacket:
         sequence=data[13],
         fragment_index=data[14],
         fragment_flag=data[15],
-        payload=data[APP_MEDIA_HEADER_BYTES:payload_end],
+        payload=data[payload_start:payload_end],
         header=data[:APP_MEDIA_HEADER_BYTES],
     )
 

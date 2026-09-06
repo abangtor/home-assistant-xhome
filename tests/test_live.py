@@ -141,20 +141,33 @@ class LiveFrameTests(unittest.TestCase):
         self.assertTrue(packet.starts_frame)
         self.assertEqual(packet.payload, b"jpg")
 
-    def test_parse_live_app_media_packet_uses_declared_length_for_final_jpeg_tail(self):
-        jpeg_tail = b"body" + (b"x" * 26) + b"\xff\xd9"
-        header = bytearray(20)
-        header[:4] = (8).to_bytes(4, "little")
-        header[4:8] = (len(jpeg_tail) + 12).to_bytes(4, "little")
-        header[11] = MediaType.JPEG_FRAME
-        header[15] = 2
-        header[16:20] = (len(jpeg_tail) - 28).to_bytes(4, "little")
+    def test_final_jpeg_metadata_is_not_inserted_into_image(self):
+        from PIL import Image
 
-        packet = parse_live_app_media_packet(bytes(header) + jpeg_tail)
+        output = io.BytesIO()
+        Image.new("RGB", (64, 48), (30, 120, 220)).save(output, format="JPEG")
+        jpeg = output.getvalue()
+        metadata = bytes.fromhex("0000000000000000000100008002e001000000007030000000000000")
 
-        self.assertTrue(packet.ends_frame)
-        self.assertEqual(packet.payload, jpeg_tail)
-        self.assertTrue(packet.payload.endswith(b"\xff\xd9"))
+        def packet(flag, index, body, extra=b""):
+            header = bytearray(20)
+            header[:4] = (8).to_bytes(4, "little")
+            header[4:8] = (12 + len(extra) + len(body)).to_bytes(4, "little")
+            header[11] = MediaType.JPEG_FRAME
+            header[14] = index
+            header[15] = flag
+            header[16:20] = len(body).to_bytes(4, "little")
+            return bytes(header) + extra + body
+
+        for tail_size in (2, 50, 300):
+            with self.subTest(tail_size=tail_size):
+                assembler = LiveAppMediaAssembler()
+                assembler.feed(parse_live_app_media_packet(packet(1, 1, jpeg[:-tail_size])))
+                final_packet = packet(2, 2, jpeg[-tail_size:], metadata)
+                frame = assembler.feed(parse_live_app_media_packet(final_packet))
+                self.assertEqual(frame.payload, jpeg)
+                with self.assertRaisesRegex(ValueError, "truncated"):
+                    parse_live_app_media_packet(final_packet[:-1])
 
     def test_live_app_media_assembler_returns_frame_on_end_fragment(self):
         def packet(flag: int, index: int, payload: bytes) -> object:

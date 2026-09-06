@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import ast
+import asyncio
 import collections
 import importlib.util
-from io import BytesIO
-from pathlib import Path
 import sys
+import time
 import types
 import unittest
+from io import BytesIO
+from pathlib import Path
 
 IMAGE_PATH = Path(__file__).resolve().parents[1] / "custom_components" / "xhome" / "image.py"
 COMPONENT_PATH = IMAGE_PATH.parent
@@ -157,6 +160,78 @@ class ImageEntityTests(unittest.TestCase):
         )
 
         self.assertGreaterEqual(crop_pixels, 4)
+
+
+class LiveFrameRenderingTests(unittest.TestCase):
+    """Exercise production frame methods without requiring a running HA."""
+
+    def setUp(self):
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow is not installed")
+        self.Image = Image
+        tree = ast.parse((COMPONENT_PATH / "camera.py").read_text())
+        camera = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "XHomeLiveCamera")
+        methods = {"_prepare_stream_jpeg", "async_camera_image", "_handle_live_jpeg"}
+        selected = [node for node in camera.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and node.name in methods]
+        namespace = {
+            "prepare_live_image_bytes": image.prepare_live_image_bytes,
+            "asyncio": asyncio,
+            "time": time,
+            "_replace_latest_frame": lambda queue, frame: queue.put_nowait(frame),
+        }
+        exec(compile(ast.Module(body=selected, type_ignores=[]), str(COMPONENT_PATH / "camera.py"), "exec"), namespace)
+        self.camera = type("FrameCamera", (), {name: namespace[name] for name in methods})()
+        self.camera._attr_content_type = "image/jpeg"
+        self.camera._image_rotation = lambda: 90
+
+    def jpeg(self, edge):
+        frame = self.Image.new("RGB", (640, 368), (160, 160, 160))
+        # A real dark/light object along the edge must not be mistaken for padding.
+        frame.paste((edge, edge, edge), (0, 336, 640, 368))
+        output = BytesIO()
+        frame.save(output, format="JPEG", quality=95)
+        return output.getvalue()
+
+    def test_changing_edge_brightness_preserves_all_pixels_and_dimensions(self):
+        for rotation in (0, 90, 180, 270):
+            self.camera._image_rotation = lambda rotation=rotation: rotation
+            for edge in (160, 0, 255, 160):
+                with self.subTest(rotation=rotation, edge=edge):
+                    prepared, status, crop = self.camera._prepare_stream_jpeg(self.jpeg(edge))
+                    self.assertEqual(crop, 0)
+                    self.assertEqual(status, "rotated" if rotation else "original")
+                    with self.Image.open(BytesIO(prepared)) as actual:
+                        self.assertEqual(actual.size, (368, 640) if rotation in (90, 270) else (640, 368))
+                        point = {0: (320, 352), 90: (15, 320), 180: (319, 15), 270: (352, 319)}[rotation]
+                        self.assertAlmostEqual(actual.convert("L").getpixel(point), edge, delta=3)
+
+    def test_truncated_and_non_jpeg_frames_are_dropped_in_every_rotation(self):
+        valid = self.jpeg(160)
+        png = BytesIO()
+        self.Image.new("RGB", (640, 368)).save(png, format="PNG")
+        for rotation in (0, 90, 180, 270):
+            self.camera._image_rotation = lambda rotation=rotation: rotation
+            for invalid in (valid[:-2], valid[:500], b"not a jpeg", png.getvalue()):
+                with self.subTest(rotation=rotation, length=len(invalid)):
+                    self.assertEqual(self.camera._prepare_stream_jpeg(invalid), (None, "invalid", 0))
+
+    def test_raw_arrivals_do_not_replace_validated_snapshot_or_rotate_it_twice(self):
+        prepared, _, _ = self.camera._prepare_stream_jpeg(self.jpeg(0))
+        self.camera._last_live_jpeg = prepared
+        self.camera._live_frames = 0
+        self.camera._write_live_state = lambda: None
+        queue = asyncio.Queue()
+        self.camera._handle_live_jpeg(queue, b"broken next frame")
+        self.assertEqual(queue.get_nowait(), b"broken next frame")
+        self.assertEqual(asyncio.run(self.camera.async_camera_image()), prepared)
+        with self.Image.open(BytesIO(asyncio.run(self.camera.async_camera_image()))) as snapshot:
+            self.assertEqual(snapshot.size, (368, 640))
+
+    def test_invalid_rotation_returns_a_pair_without_raising(self):
+        self.assertEqual(image.prepare_live_image_bytes(self.jpeg(0), 45, "image/jpeg"), (None, 0))
 
 
 if __name__ == "__main__":

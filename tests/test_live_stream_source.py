@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import unittest
-
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CAMERA_PATH = ROOT / "custom_components" / "xhome" / "camera.py"
@@ -35,13 +34,12 @@ class LiveStreamSourceTests(unittest.TestCase):
         self.assertIn("MJPEG_NEXT_FRAME_TIMEOUT", camera_source)
         self.assertIn("image_rotation_degrees", camera_source)
         self.assertIn("rotate_image_bytes", camera_source)
-        self.assertIn("is_decodable_jpeg", camera_source)
         self.assertIn("prepare_live_image_bytes", camera_source)
         self.assertIn("def _rotate_jpeg", camera_source)
         self.assertIn("def _prepare_stream_jpeg", camera_source)
         self.assertIn("if frame is None:", camera_source)
         self.assertIn('"image_rotation": self._image_rotation()', camera_source)
-        self.assertIn('"live_rotation_edge_crop_mode": "auto"', camera_source)
+        self.assertIn('"live_rotation_edge_crop_mode": "none"', camera_source)
         self.assertIn('"live_rotation_edge_crop_pixels": self._live_rotation_edge_crop_pixels', camera_source)
         self.assertIn('"live_mjpeg_clients_active": self._live_mjpeg_clients_active', camera_source)
         self.assertIn('"live_mjpeg_frames_written": self._live_mjpeg_frames_written', camera_source)
