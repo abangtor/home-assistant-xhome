@@ -41,7 +41,9 @@ class FakeSession:
 
 class FakeSequenceSession:
     def __init__(self, responses):
-        self.responses = [response if isinstance(response, FakeResponse) else FakeResponse(response) for response in responses]
+        self.responses = [
+            response if isinstance(response, FakeResponse) else FakeResponse(response) for response in responses
+        ]
         self.calls = []
 
     def request(self, *args, **kwargs):
@@ -54,10 +56,64 @@ class SigningTests(unittest.TestCase):
         self.assertEqual(sha1_hex("abc"), "a9993e364706816aba3e25717850c26c9cd0d89d")
 
     def test_login_sign_uses_lowercase_joined_value(self):
-        self.assertEqual(login_sign("User@Example.com", "PassWord", 1234567890), "2d7df0a27d91a9439b742ce8fd42a8ee4e26f3f2")
+        self.assertEqual(
+            login_sign("User@Example.com", "PassWord", 1234567890), "2d7df0a27d91a9439b742ce8fd42a8ee4e26f3f2"
+        )
 
 
 class ClientTests(unittest.TestCase):
+    def test_created_login_response_with_top_level_token(self):
+        session = FakeSequenceSession([
+            FakeResponse({"code": 201, "message": "success", "id": 42, "token": "tok"}, status_code=201),
+            {"code": 200, "message": "success", "mainList": [{"uid": "test-device"}], "shareList": []},
+        ])
+        client = XHomeClient(session=session)
+        self.assertEqual(client.login("user", "password", timestamp=123).token, "tok")
+        self.assertEqual(client.flatten_devices(), [{"uid": "test-device"}])
+
+    def test_success_status_representations_allow_login_and_device_discovery(self):
+        for field in ("code", "resultStatus"):
+            for status in (0, 200, 201, "0", "200", "201", 0.0, 200.0, 201.0, " 200 "):
+                with self.subTest(field=field, status=status):
+                    session = FakeSequenceSession([
+                        {field: status, "message": "success", "data": {"id": 42, "token": "tok"}},
+                        {field: status, "message": "success", "resultData": {"mainList": [{"uid": "test-device"}]}},
+                    ])
+                    client = XHomeClient(session=session)
+                    self.assertEqual(client.login("user", "password", timestamp=123).user_id, 42)
+                    self.assertEqual(client.flatten_devices(), [{"uid": "test-device"}])
+
+    def test_success_message_does_not_override_error_status(self):
+        for field in ("code", "resultStatus"):
+            for status in (401, "401", 500, "500", 200.5):
+                with self.subTest(field=field, status=status):
+                    payload = {field: status, "message": "success"}
+                    client = XHomeClient(token="tok", session=FakeSession(payload))
+                    with self.assertRaisesRegex(XHomeAPIError, f"{field}={status}") as raised:
+                        client.get_current_user()
+                    self.assertEqual(raised.exception.payload, payload)
+
+    def test_malformed_statuses_are_rejected_without_logging_response_data(self):
+        for status in (None, False, True, "private-value", [], {}):
+            with self.subTest(status=status):
+                client = XHomeClient(token="tok", session=FakeSession({"code": status, "token": "secret-token"}))
+                with self.assertRaises(XHomeAPIError) as raised:
+                    client.get_current_user()
+                self.assertNotIn("private-value", str(raised.exception))
+                self.assertNotIn("secret-token", str(raised.exception))
+
+    def test_known_token_error_takes_precedence_over_success_status(self):
+        for message in ("invalid token", "no token"):
+            client = XHomeClient(token="tok", session=FakeSession({"code": 200.0, "message": message}))
+            with self.assertRaises(XHomeAuthError):
+                client.get_current_user()
+
+    def test_error_in_either_status_field_is_not_ignored(self):
+        for payload in ({"code": 500, "resultStatus": 200}, {"code": 200, "resultStatus": 500}):
+            client = XHomeClient(token="tok", session=FakeSession(payload))
+            with self.assertRaises(XHomeAPIError):
+                client.get_current_user()
+
     def test_login_sends_signed_body_and_stores_session(self):
         session = FakeSession({"id": 42, "token": "tok", "refresh_key": "ref"})
         client = XHomeClient(session=session)
@@ -471,7 +527,9 @@ class OpenClawSecretsTests(unittest.TestCase):
     def test_load_openclaw_auth_profile(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "secrets.json"
-            path.write_text(json.dumps({"authProfiles": {"xhome": {"username": "u", "password": "p", "region": "china"}}}))
+            path.write_text(
+                json.dumps({"authProfiles": {"xhome": {"username": "u", "password": "p", "region": "china"}}})
+            )
 
             self.assertEqual(
                 load_openclaw_auth_profile("xhome", secrets_file=path),

@@ -678,7 +678,12 @@ class XHomeClient:
         )
 
     def get_system_uptime(self, *, language: str = "en", area: str | None = None) -> JSON:
-        return self.get("v1/api/server/uptime/list", params={"language": language, "area": area or self.region.key}, route="developer", auth=False)
+        return self.get(
+            "v1/api/server/uptime/list",
+            params={"language": language, "area": area or self.region.key},
+            route="developer",
+            auth=False,
+        )
 
     def get_country(self) -> JSON:
         return self.get("v1/api/app/country", route="area", auth=False)
@@ -818,11 +823,31 @@ def _raise_for_api_error(payload: JSON) -> None:
     if message in {"invalid token", "no token"}:
         raise XHomeAuthError(str(message))
 
-    if "code" in payload and str(payload["code"]) not in {"0", "200"}:
-        raise XHomeAPIError(str(message or f"XHome API returned code={payload['code']}"), payload=payload)
-
-    if "resultStatus" in payload and str(payload["resultStatus"]) not in {"0", "200"}:
-        raise XHomeAPIError(str(message or f"XHome API returned resultStatus={payload['resultStatus']}"), payload=payload)
+    for field in ("code", "resultStatus"):
+        if field not in payload:
+            continue
+        status = payload[field]
+        # Login returns code=201 (Created) with the token at the top level.
+        # JSON numbers may be decoded as floats. Comparing their string form
+        # incorrectly rejects 200.0/0.0, even though they are success codes.
+        # Do not let Python's bool/int equivalence turn False into success.
+        if not isinstance(status, bool) and (
+            (isinstance(status, (int, float)) and status in (0, 200, 201))
+            or (isinstance(status, str) and status.strip() in {"0", "200", "201"})
+        ):
+            continue
+        # Never let a generic server message ("success") hide the rejected
+        # status. Only include numeric values, not arbitrary response content.
+        if isinstance(status, (int, float)) and not isinstance(status, bool):
+            detail = str(status)
+        elif isinstance(status, str) and status.strip().isascii() and status.strip().isdigit():
+            detail = status.strip()[:16]
+        else:
+            detail = f"<{type(status).__name__}>"
+        raise XHomeAPIError(
+            f"XHome API returned {field}={detail}",
+            payload=payload,
+        )
 
 
 def _optional_int(value: Any) -> int | None:
